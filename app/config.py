@@ -11,10 +11,10 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "invoice_desk.sqlite3"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 # Tried in order when the main model is overloaded (503/429), retired (404) or too slow.
 GEMINI_FALLBACKS = [m.strip() for m in os.environ.get(
-    "GEMINI_FALLBACKS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",") if m.strip()]
+    "GEMINI_FALLBACKS", "gemini-3.1-flash-lite,gemini-3.8-flash").split(",") if m.strip()]
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-5-5")
 # auto | gemini | anthropic | rules
