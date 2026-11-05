@@ -221,6 +221,8 @@ function stagePanel(s, run) {
       ${(d.line_items || []).map((l) => `<tr><td>${esc(l.description)}</td><td>${esc(l.hsn || "")}</td><td class="num">${esc(l.qty)}</td><td class="num">${inr(l.unit_price)}</td><td class="num">${inr(l.amount)}</td></tr>`).join("") || `<tr><td colspan="5" class="missing">No line items found</td></tr>`}
       ${(d.taxes || []).map((t) => `<tr><td colspan="4" class="muted">${esc(t.type)} @ ${esc(t.rate)}%</td><td class="num">${inr(t.amount)}</td></tr>`).join("")}
       </tbody></table></div>
+      ${d.second_ocr_pass ? `<p class="small" style="margin-top:12px"><b>Second OCR pass:</b> ${esc(d.second_ocr_pass)}</p>` : ""}
+      ${d.llm_error ? `<p class="small" style="margin-top:12px;color:var(--stop)"><b>LLM error:</b> ${esc(d.llm_error)}</p>` : ""}
       ${d.cross_check ? `<p class="small" style="margin-top:12px"><b>Cross-check:</b> ${typeof d.cross_check === "string" ? esc(d.cross_check) : "disagreements found (see below)"}</p>` : ""}`;
   } else if (s.key === "vendor" && d.vendor) {
     const v = d.vendor;
