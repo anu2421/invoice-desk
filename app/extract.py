@@ -336,30 +336,48 @@ def _post(url, body, headers, name):
     return r
 
 
-def llm_extract(path, provider: str, scanned: bool = False) -> dict:
-    data = base64.b64encode(open(path, "rb").read()).decode()
-    if provider == "gemini":
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
-        base = {"temperature": 0, "responseMimeType": "application/json"}
-        # Gemini 3 models think at "high" by default, which is slow and unnecessary for reading a
-        # document. Ask for the lowest level; if this model rejects the setting, step back.
-        attempts = [{**base, "thinkingConfig": {"thinkingLevel": lvl}} for lvl in ("minimal", "low")] + [base]
-        last = None
-        for gen in attempts:
+def _gemini(data: str):
+    """Try the main model, then the fallbacks. Moves on when a model is overloaded, rate-limited,
+    retired or slow, so one busy model doesn't push every invoice onto the parser."""
+    import time as _t
+    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACKS if m != config.GEMINI_MODEL]
+    base = {"temperature": 0, "responseMimeType": "application/json"}
+    # Gemini 3 models think at "high" by default, which is slow and unnecessary for reading a
+    # document. Ask for the lowest level; if a model rejects the setting, step back.
+    gens = [{**base, "thinkingConfig": {"thinkingLevel": lvl}} for lvl in ("minimal", "low")] + [base]
+    errors, started = [], _t.perf_counter()
+    for model in models:
+        if _t.perf_counter() - started > 50:
+            break
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for gen in gens:
             body = {"contents": [{"parts": [{"text": PROMPT}, {"inline_data": {"mime_type": "application/pdf", "data": data}}]}],
                     "generationConfig": gen}
             try:
-                r = _post(url, body, {"x-goog-api-key": config.GEMINI_API_KEY}, "Gemini")
+                r = requests.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=25)
+            except requests.Timeout:
+                errors.append(f"{model}: no reply in 25 s")
                 break
-            except RuntimeError as e:
-                last = e
-                if " 400:" not in str(e):  # only a rejected setting is worth retrying differently
-                    raise
-        else:
-            raise last
-        parts = r.json()["candidates"][0]["content"]["parts"]
-        out = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        model = config.GEMINI_MODEL
+            if r.status_code == 200:
+                parts = r.json()["candidates"][0]["content"]["parts"]
+                return "".join(p.get("text", "") for p in parts if not p.get("thought")), model
+            try:
+                msg = r.json().get("error", {}).get("message", "")
+            except Exception:
+                msg = r.text[:120]
+            if r.status_code == 400:
+                continue  # setting not supported by this model; try the next thinking level
+            errors.append(f"{model}: {r.status_code} {msg[:90]}")
+            if r.status_code in (401, 403):
+                raise RuntimeError("Gemini rejected the API key: " + msg[:150])
+            break  # 404 / 429 / 5xx: try the next model
+    raise RuntimeError("All Gemini models unavailable. " + " | ".join(errors))
+
+
+def llm_extract(path, provider: str, scanned: bool = False) -> dict:
+    data = base64.b64encode(open(path, "rb").read()).decode()
+    if provider == "gemini":
+        out, model = _gemini(data)
     elif provider == "anthropic":
         body = {"model": config.ANTHROPIC_MODEL, "max_tokens": 2500, "temperature": 0,
                 "messages": [{"role": "user", "content": [
