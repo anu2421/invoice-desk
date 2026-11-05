@@ -83,6 +83,8 @@ POS = {
     "PO-24075": ("V104", "2026-10-08", "open", "Electrical panel - warehouse", [
         ("MCB 32A double pole", "8536", 200, 340.00, "Nos"),
         ("Distribution board 8-way", "8537", 25, 1900.00, "Nos")]),
+    "PO-24082": ("V102", "2026-10-02", "open", "Corrugated boxes - Q4 blanket order", [
+        ("Corrugated box 3-ply 12x10x8 in", "4819", 10000, 26.00, "Nos")]),
     "PO-24079": ("V104", "2026-10-12", "open", "Ventilation - stockroom", [
         ("Exhaust fan 300mm", "8414", 60, 1850.00, "Nos")]),
 }
@@ -495,6 +497,22 @@ INVOICES = [
                 ("Stretch film 23 micron", "3920", 80, 414.00, "Rolls")], tax=IGST,
          scenario="Small variance within tolerance", expect="approved",
          story="Stretch film is 1% above the PO rate. That's inside the 2% price tolerance, so it auto-approves with a note."),
+    # ---- learning from reviewers: run these one at a time, approving 12 and 13 in between
+    dict(file="12_sharma_boxes_oct_surcharge.pdf", layout="B", vendor_id="V102", number="SPI/2026/0672",
+         date="2026-10-06", po="PO-24082", band="#7A3B14",
+         lines=[("Corrugated box 3-ply 12x10x8 in", "4819", 3000, 26.90, "Nos")], tax=IGST,
+         scenario="Learning loop 1: price +3.5%", expect="review", batch=False, group="learning",
+         story="Box price is 3.5% over PO (a freight surcharge procurement agreed verbally). Held. Approve it with a note."),
+    dict(file="13_sharma_boxes_nov_surcharge.pdf", layout="B", vendor_id="V102", number="SPI/2026/0689",
+         date="2026-10-20", po="PO-24082", band="#7A3B14",
+         lines=[("Corrugated box 3-ply 12x10x8 in", "4819", 2500, 26.85, "Nos")], tax=IGST,
+         scenario="Learning loop 2: same surcharge again", expect="review", batch=False, group="learning",
+         story="Same surcharge, held again. Approve it too, then check the Runs page: a rule change is suggested."),
+    dict(file="14_sharma_boxes_dec_surcharge.pdf", layout="B", vendor_id="V102", number="SPI/2026/0701",
+         date="2026-11-03", po="PO-24082", band="#7A3B14",
+         lines=[("Corrugated box 3-ply 12x10x8 in", "4819", 3200, 26.95, "Nos")], tax=IGST,
+         scenario="Learning loop 3: after applying the rule", expect="review", batch=False, group="learning",
+         story="Once the suggested tolerance is applied, this one goes straight through. Without it, it's held like the others."),
 ]
 
 
@@ -506,7 +524,8 @@ def main():
         if inv.get("scanned"):
             pdf = scan(pdf)
         (SAMPLES / inv["file"]).write_bytes(pdf)
-        manifest.append({k: inv[k] for k in ("file", "scenario", "expect", "story")})
+        manifest.append({**{k: inv[k] for k in ("file", "scenario", "expect", "story")},
+                         "batch": inv.get("batch", True), "group": inv.get("group", "core")})
         print(f"wrote {inv['file']}")
     (SAMPLES / "manifest.json").write_text(json.dumps(manifest, indent=2))
 

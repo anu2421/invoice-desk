@@ -206,6 +206,45 @@ LINE_RE = re.compile(
     r"^(?:\d{1,3}[.)]?\s+)?(?P<desc>[A-Za-z].+?)\s+(?:(?P<hsn>\d{4,8})\s+)?(?P<qty>\d[\d,]*(?:\.\d+)?)\s+"
     r"(?:[A-Za-z]{2,6}\s+)?(?P<rate>[\d,]+\.\d{2})\s+(?P<amt>[\d,]+\.\d{2})\s*$")
 AMT = r"(?:Rs\.?|INR|₹)?\s*([\d,]+\.\d{2})"
+DOC_NO = (r"(?:Invoice\s*(?:No\.?|Number|#)|Bill\s*of\s*Supply\s*(?:No\.?|Number)|Bill\s*No\.?|Inv\.?\s*No\.?)"
+          r"\s*[:#.\-]?\s*([A-Z0-9][A-Z0-9/\-]{2,})")
+
+
+def split_documents(path):
+    """Find where one invoice ends and the next begins inside a single PDF (common with
+    marketplace downloads: product invoice + platform-fee invoice + delivery bill of supply).
+    Pages are grouped by the document number printed on them; a page without a number
+    continues the previous document; an exact repeat of a page is dropped as a duplicate copy.
+    Returns a list of groups: {"number", "pages": [0-based], "dropped": [0-based]}."""
+    try:
+        with pdfplumber.open(path) as pdf:
+            texts = [(p.extract_text() or "") for p in pdf.pages]
+    except Exception:
+        return []
+    groups, seen = [], set()
+    for i, t in enumerate(texts):
+        m = re.search(DOC_NO, t, re.I | re.M)
+        num = m.group(1).strip().upper() if m else None
+        key = re.sub(r"\s+", " ", t).strip()
+        if groups and key and key in seen:
+            groups[-1]["dropped"].append(i)
+            continue
+        seen.add(key)
+        if num and (not groups or groups[-1]["number"] not in (None, num)):
+            groups.append({"number": num, "pages": [i], "dropped": []})
+        elif groups:
+            groups[-1]["pages"].append(i)
+            groups[-1]["number"] = groups[-1]["number"] or num
+        else:
+            groups.append({"number": num, "pages": [i], "dropped": []})
+    return groups
+
+
+def write_pages(src, pages, dest):
+    import pypdfium2 as pdfium
+    pdf, new = pdfium.PdfDocument(str(src)), pdfium.PdfDocument.new()
+    new.import_pages(pdf, pages)
+    new.save(str(dest))
 
 
 def _find(pattern, text, flags=re.I | re.M):
@@ -221,11 +260,21 @@ def rules_extract(text: str, ocr: bool = False, ocr_confidence: float | None = N
 
     # vendor name: first line of the document, minus document-type words
     first = lines[0] if lines else ""
-    f["vendor_name"] = re.sub(r"(?i)\b(tax invoice|proforma invoice|invoice|original for recipient)\b", "", first).strip(" -:|") or None
-    f["document_title"] = _find(r"\b(PROFORMA INVOICE|TAX INVOICE|QUOTATION|CREDIT NOTE|DEBIT NOTE|INVOICE)\b", text)
+    f["vendor_name"] = re.sub(r"(?i)\b(tax invoice|proforma invoice|bill of supply|invoice|original for recipient)\b", "", first).strip(" -:|") or None
+    if not f["vendor_name"]:
+        # marketplace layouts name the seller under a label instead of at the top
+        company = r"([A-Za-z][A-Za-z&. ]*?\b(?:Private Limited|Pvt\.? Ltd\.?|Limited|LLP))\b"
+        for pat in (r"Legal\s*Entity\s*Name\s*:\s*([^\n]+)",
+                    r"Bill(?:ed)?\s*From\s*:?[^\n]*\n[ \t]*" + company,
+                    r"(?:Service\s*Provider|Sold\s*By|Seller)[^\n]*\n(?:[^\n]*\n)?[ \t]*" + company,
+                    company):
+            v = _find(pat, text, re.I | re.M)
+            if v:
+                f["vendor_name"] = v.strip()
+                break
+    f["document_title"] = _find(r"\b(PROFORMA INVOICE|TAX INVOICE|BILL OF SUPPLY|QUOTATION|CREDIT NOTE|DEBIT NOTE|INVOICE)\b", text)
 
-    f["invoice_number"] = _find(
-        r"(?:Invoice\s*(?:No\.?|Number|#)|Bill\s*No\.?|Inv\.?\s*No\.?)\s*[:#.\-]?\s*([A-Z0-9][A-Z0-9/\-]{2,})", text)
+    f["invoice_number"] = _find(DOC_NO, text)
     raw_date = _find(r"(?:Invoice\s*Date|(?<![A-Za-z])(?<!Due )(?<!PO )Date)\s*[:\-]?\s*"
                      r"(\d{1,2}[\-/ ][A-Za-z]{3,9}[\-/ ]\d{4}|\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})", text)
     f["invoice_date"] = parse_date(raw_date)
@@ -233,10 +282,15 @@ def rules_extract(text: str, ocr: bool = False, ocr_confidence: float | None = N
     f["po_number"] = re.sub(r"PO[\-\s]?", "PO-", po.upper()) if po else None
 
     # GSTINs: the one after "Bill To / Buyer" belongs to us; the other is the vendor's
-    found = [(m.start(), m.group(1)) for m in re.finditer(r"GSTIN\s*[:\-]?\s*([0-9A-Z|!]{15})", text, re.I)]
+    found = [(m.start(), m.group(1)) for m in re.finditer(
+        r"GSTIN\s*(?:Number|No\.?)?\s*[:\-]?\s*([0-9A-Z|!]{15})", text, re.I)]
     bill_pos = min([m.start() for m in re.finditer(r"(?i)bill(?:ed)?\s*to|buyer", text)] or [10 ** 9])
-    vendor_g = next((g for p, g in found if p < bill_pos), None)
-    buyer_g = next((g for p, g in found if p > bill_pos), None)
+    if len(found) == 1:
+        # one GSTIN on the page is the seller's; an individual buyer has none
+        vendor_g, buyer_g = found[0][1], None
+    else:
+        vendor_g = next((g for p, g in found if p < bill_pos), found[0][1] if found and bill_pos == 10 ** 9 else None)
+        buyer_g = next((g for p, g in found if p > bill_pos), None)
     repaired, repairs = [], {}
     for key, g in (("vendor_gstin", vendor_g), ("buyer_gstin", buyer_g)):
         fixed, did = repair_gstin(g, from_ocr=ocr)
@@ -260,14 +314,38 @@ def rules_extract(text: str, ocr: bool = False, ocr_confidence: float | None = N
     for m in re.finditer(r"\b(CGST|SGST|IGST|UTGST)\s*@?\s*(\d{1,2}(?:\.\d+)?)\s*%\s*" + AMT, text, re.I):
         taxes.append(dict(type=m.group(1).upper(), rate=float(m.group(2)), amount=parse_amount(m.group(3))))
     f["taxes"] = taxes
-    f["total"] = parse_amount(_find(
-        r"^(?:Grand\s*Total|Total\s*Amount|Amount\s*Payable|Net\s*Amount|Invoice\s*Total|Total)\s*:?\s*" + AMT, text))
+    # total: the LAST amount on the first total line (tables put the final column last)
+    total = None
+    m = re.search(r"^[ \t]*(?:Grand\s*Total|Total\s*Amount|Amount\s*Payable|Net\s*Amount|Invoice\s*Total|Total\s*Value|Total)\b(.*)$",
+                  text, re.I | re.M)
+    if m:
+        nums = re.findall(r"(?:Rs\.?|INR|₹)?\s*(\d[\d,]*\.\d{2,3})\b", m.group(1))
+        total = parse_amount(nums[-1]) if nums else None
+    if total is None:
+        total = parse_amount(_find(r"Amount\s*of\s*INR\s*([\d,]+\.\d{2})", text))
+    f["total"] = total
 
     f["bank_account"] = _find(r"(?:A/?C\.?\s*(?:No\.?|Number)?|Account\s*(?:No\.?|Number))\s*[:\-]?\s*(\d{9,18})", text)
     ifsc, did = repair_ifsc(_find(r"IFSC\s*(?:Code)?\s*[:\-]?\s*([A-Z0-9]{11})", text))
     f["ifsc"] = ifsc
     f["bank_change_notice"] = bool(re.search(r"(?i)(bank|account)\s+(details|account)?\s*(has|have)?\s*changed|new bank", text))
     f["currency"] = "INR"
+
+    # who it's billed to, and where the supply is taxed
+    buyer = None
+    for m in re.finditer(r"(?:Customer\s*Name|Bill(?:ed)?\s*To(?:\s*/\s*Ship\s*to)?)\s*:?[ \t]*\n?[ \t]*([A-Z][A-Za-z.&' ]{2,60}?)(?:\s{2,}|\n|$)",
+                         text, re.I | re.M):
+        cand = m.group(1).strip()
+        # skip column headers that sit where a name would be
+        if not re.search(r"(?i)^(service provider|billed from|ship(ped)? (from|to)|seller|sold by)\b", cand):
+            # two-column layouts glue the seller's name to the buyer's: "Flipkart India Private Limited Anukriti Sinha"
+            tail = re.split(r"(?i)\b(?:private limited|pvt\.? ltd\.?|limited|llp)\s+", cand)
+            buyer = tail[-1].strip() if len(tail) > 1 and tail[-1].strip() else cand
+            break
+    f["buyer_name"] = buyer
+    f["buyer_registered"] = False if re.search(r"(?i)customer\s*type\s*:\s*unregistered|gstin\s*(?:number)?\s*:\s*unregistered", text) else None
+    pos = _find(r"Place\s*of\s*Supply\s*:?\s*([A-Za-z][A-Za-z &]+?(?:\s*\(\s*\d{1,2}\s*\))?)(?:\s{2,}|\n|$)", text)
+    f["place_of_supply"] = pos
 
     for k in KEY_FIELDS:
         conf[k] = base if f.get(k) else 0.0
@@ -285,11 +363,13 @@ PROMPT = """You are an accounts-payable data extraction engine for an Indian com
 Read the attached vendor invoice and return ONLY a JSON object with exactly these keys:
 
 {
- "document_title": string|null,          // e.g. "TAX INVOICE", "PROFORMA INVOICE"
+ "document_title": string|null,          // e.g. "TAX INVOICE", "PROFORMA INVOICE", "BILL OF SUPPLY"
  "vendor_name": string|null,
  "vendor_gstin": string|null,             // 15 chars, the SELLER's GSTIN
- "buyer_name": string|null,
+ "buyer_name": string|null,               // the BILL-TO party's name, company or person
  "buyer_gstin": string|null,              // the BILL-TO party's GSTIN
+ "buyer_registered": boolean|null,        // false if the buyer is shown as "Unregistered"
+ "place_of_supply": string|null,          // state as printed, e.g. "Uttarakhand (05)"
  "invoice_number": string|null,           // exactly as printed
  "invoice_date": string|null,             // ISO yyyy-mm-dd. Numeric dates are dd/mm/yyyy.
  "po_number": string|null,                // only if printed. Never guess.
@@ -305,7 +385,7 @@ Read the attached vendor invoice and return ONLY a JSON object with exactly thes
                 "line_items": 0-1}
 }
 
-Rules: numbers as plain numbers without commas or currency symbols. If a field is not on the
+Rules: if the file holds more than one invoice, read only the first one. Numbers as plain numbers without commas or currency symbols. If a field is not on the
 document, use null and confidence 0. Do not infer or invent values. Confidence reflects how
 clearly the value is printed (blurry scan, partially cut off, ambiguous = lower)."""
 

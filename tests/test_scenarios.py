@@ -27,7 +27,7 @@ def main():
     db.conn()
     manifest = json.loads((ROOT / "samples" / "manifest.json").read_text())
     failed = 0
-    for m in manifest:
+    for m in [m for m in manifest if m.get("batch", True)]:
         r = run(m["file"])
         ok = r["decision"] == m["expect"]
         failed += not ok
@@ -54,6 +54,45 @@ def main():
         and fl["vendor_gstin"] == "27AADFS3390Q1ZJ" and fl["total"] == 115781.6
     failed += not ok
     print(f"{'PASS' if ok else 'FAIL'}  phone photo of 11 is fully read and held for OCR repair -> {r['decision']}")
+    # learning from reviewers: approve 12 and 13, accept the suggested tolerance, 14 then goes straight through
+    db.load_reference(reset_runs=True)
+    from app import rules as R
+    for n in ("12_sharma_boxes_oct_surcharge.pdf", "13_sharma_boxes_nov_surcharge.pdf"):
+        r = run(n)
+        assert r["decision"] == "review", (n, r["decision"])
+        pipeline.review_action(r["id"], "approve", "Freight surcharge agreed with procurement")
+    sugg = [x for x in R.insights()[0] if x.get("kind") == "price_tolerance"]
+    ok = bool(sugg) and sugg[0]["vendor_id"] == "V102" and sugg[0]["proposed"] == 4.0
+    if ok:
+        R.apply_price_tolerance("V102", sugg[0]["proposed"], "test")
+        r = run("14_sharma_boxes_dec_surcharge.pdf")
+        ok = r["decision"] == "approved"
+    failed += not ok
+    print(f"{'PASS' if ok else 'FAIL'}  learning loop: 2 approvals -> 4% tolerance suggested -> invoice 14 auto-approved")
+
+    # a PDF holding two invoices is split into two runs
+    import pypdfium2 as pdfium
+    a = pdfium.PdfDocument(str(ROOT / "samples" / "01_kaveri_stationery_clean.pdf"))
+    b = pdfium.PdfDocument(str(ROOT / "samples" / "06_kaveri_chairs_price_creep.pdf"))
+    merged = pdfium.PdfDocument.new()
+    merged.import_pages(a)
+    merged.import_pages(b)
+    merged.import_pages(b)  # a repeated page, as marketplace downloads often have
+    buf = io.BytesIO()
+    merged.save(buf)
+    db.load_reference(reset_runs=True)
+    rid = pipeline.start(buf.getvalue(), "two_invoices.pdf")
+    while db.get_run(rid)["status"] == "running":
+        time.sleep(0.05)
+    parent = db.get_run(rid)
+    kids = parent["output"]["children"] if parent["decision"] == "split" else []
+    for k in kids:
+        while db.get_run(k["id"])["status"] == "running":
+            time.sleep(0.05)
+    decisions = [db.get_run(k["id"])["decision"] for k in kids]
+    ok = decisions == ["approved", "review"] and kids[1]["dropped"] == [3]
+    failed += not ok
+    print(f"{'PASS' if ok else 'FAIL'}  2 invoices + a repeated page in one PDF -> split into {len(kids)} runs {decisions}")
     print("ALL PASSED" if not failed else f"{failed} FAILED")
     sys.exit(1 if failed else 0)
 

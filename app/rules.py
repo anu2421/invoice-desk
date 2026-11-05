@@ -13,7 +13,7 @@ from datetime import date, timedelta
 
 from . import config, db
 from .extract import similarity
-from .gst import STATE_CODES, state_of, validate_gstin
+from .gst import STATE_CODES, state_code, state_of, validate_gstin
 
 R = config.RULES
 FIELD_NAMES = {"vendor_name": "Vendor name", "vendor_gstin": "Vendor GSTIN", "buyer_gstin": "Billed-to GSTIN",
@@ -50,6 +50,23 @@ def validate_invoice(f: dict, company: dict, read_info: dict):
         out.append(F("NOT_TAX_INVOICE", f"Document is a {title.title()}, not a tax invoice", "reject",
                      "A proforma or quotation can't be booked or used to claim input tax credit.",
                      vendor_ask="Please send the final GST tax invoice for this supply."))
+
+    if "BILL OF SUPPLY" in title:
+        out.append(F("BILL_OF_SUPPLY", "Bill of supply: no GST charged", "info",
+                     "Issued for exempt or composition-scheme supplies. Payable, but there's no input tax credit to claim."))
+
+    # Is this even our invoice? Marketplace and food-delivery bills are often billed to a person.
+    addressed_to_us = (f.get("buyer_gstin") == company["gstin"] or f.get("mentions_company")
+                       or (f.get("buyer_name") and similarity(f["buyer_name"], company["name"]) >= 0.6))
+    if not addressed_to_us and not f.get("buyer_gstin"):
+        who = f.get("buyer_name") or ("an unregistered customer" if f.get("buyer_registered") is False else "someone else")
+        out.append(F("NOT_COMPANY_INVOICE", f"Billed to {who}, not to {company['name']}", "reject",
+                     ("The buyer is shown as unregistered (no GSTIN). " if f.get("buyer_registered") is False else
+                      "There's no buyer GSTIN and our company isn't named on it. ")
+                     + "It isn't a supplier invoice to the company and no input tax credit can be claimed. "
+                       "If it's a business expense, it belongs in employee expense claims, not accounts payable.",
+                     evidence={"buyer_name": f.get("buyer_name"), "buyer_registered": f.get("buyer_registered")},
+                     owner="Employee expenses", priority="high"))
 
     missing = [k for k in ("invoice_number", "invoice_date", "total") if not f.get(k)]
     names = {"invoice_number": "invoice number", "invoice_date": "invoice date", "total": "invoice total"}
@@ -119,8 +136,10 @@ def validate_invoice(f: dict, company: dict, read_info: dict):
     elif f.get("buyer_gstin"):
         out.append(F("BUYER_GSTIN", "Billed to our GSTIN", "pass", company["gstin"]))
 
-    # place of supply: intra-state = CGST+SGST, inter-state = IGST
-    vs, bs = state_of(f.get("vendor_gstin")), company["state_code"]
+    # place of supply: intra-state = CGST+SGST, inter-state = IGST. Use the place of supply printed
+    # on the invoice, then the buyer's GSTIN, and only then our own state.
+    vs = state_of(f.get("vendor_gstin"))
+    bs = state_code(f.get("place_of_supply")) or state_of(f.get("buyer_gstin")) or company["state_code"]
     kinds = {t["type"] for t in taxes}
     if vs and taxes:
         intra = vs == bs
@@ -165,7 +184,7 @@ def match_vendor(f: dict):
                          owner="Vendor master team", priority="high"))
     if not vendor:
         out.append(F("UNKNOWN_VENDOR", "Vendor is not in the vendor master", "reject",
-                     f"No approved vendor matches \"{f.get('vendor_name')}\" or GSTIN {g}. "
+                     f"No approved vendor matches \"{f.get('vendor_name') or 'the seller'}\" or GSTIN {g or '(none)'}. "
                      "Unknown vendors are never paid from an invoice alone; they go through onboarding first.",
                      vendor_ask="We don't have you registered as a supplier. Please complete our vendor onboarding "
                                 "(company details, GST certificate, cancelled cheque) before we can process invoices.",
@@ -317,7 +336,11 @@ def match_po(f: dict, vendor: dict | None):
         out.append(F("INVOICE_BEFORE_PO", "Invoice is dated before the PO", "review",
                      f"Invoice {f['invoice_date']}, PO raised {po['po_date']}."))
 
-    # line-level match
+    # line-level match. A vendor can have its own agreed price tolerance (learned from reviewers).
+    vrule = vendor_rule(vendor["vendor_id"])
+    ptol = vrule["price_tolerance_pct"] if vrule else R["price_tolerance_pct"]
+    tol_note = (f"{vendor['name']}'s agreed tolerance is {ptol:g}% ({vrule['reason']})" if vrule
+                else f"Tolerance is {ptol:g}%")
     pl = _po_lines(po["po_number"])
     rows, price_issues, unmatched = [], [], []
     for l in f.get("line_items") or []:
@@ -331,14 +354,14 @@ def match_po(f: dict, vendor: dict | None):
         row = {"invoice": l, "po": best, "similarity": sim, "price_var_pct": round(var, 2),
                "qty_var": round((l["qty"] or 0) - best["qty"], 2)}
         rows.append(row)
-        if var > R["price_tolerance_pct"]:
+        if var > ptol:
             price_issues.append(row)
     if unmatched:
         out.append(F("LINE_NOT_ON_PO", "Invoice lines not on the PO", "review", "; ".join(unmatched), owner="Procurement"))
     for r in price_issues:
         out.append(F("PRICE_VARIANCE", f"Unit price {r['price_var_pct']:+.1f}% above PO for {r['po']['description']}", "review",
                      f"PO rate {inr(r['po']['unit_price'])} × {r['po']['qty']:g}; invoiced {inr(r['invoice']['unit_price'])} × "
-                     f"{r['invoice']['qty']:g}. Tolerance is {R['price_tolerance_pct']:g}%."
+                     f"{r['invoice']['qty']:g}. {tol_note}."
                      + (f" Quantity is {abs(r['qty_var']):g} {'fewer' if r['qty_var'] < 0 else 'more'} than ordered, so the line "
                         f"total is {inr(r['invoice']['amount'])} against {inr(r['po']['qty'] * r['po']['unit_price'])} on the PO "
                         f"({(r['invoice']['amount'] / (r['po']['qty'] * r['po']['unit_price']) - 1) * 100:+.1f}%). A check on totals alone would have passed it."
@@ -346,10 +369,10 @@ def match_po(f: dict, vendor: dict | None):
                      evidence=r, owner="Procurement",
                      vendor_ask=f"{r['po']['description']} is billed at {inr(r['invoice']['unit_price'])} against our PO rate of "
                                 f"{inr(r['po']['unit_price'])}. Please confirm or reissue at the PO rate."))
-    small = [r for r in rows if r.get("po") and 0 < abs(r.get("price_var_pct", 0)) <= R["price_tolerance_pct"]]
+    small = [r for r in rows if r.get("po") and 0 < abs(r.get("price_var_pct", 0)) <= ptol]
     for r in small:
         out.append(F("PRICE_WITHIN_TOL", f"{r['po']['description']}: {r['price_var_pct']:+.1f}% vs PO, within tolerance", "info",
-                     f"Tolerance is {R['price_tolerance_pct']:g}%."))
+                     f"{tol_note}."))
     if rows and not unmatched and not price_issues:
         out.append(F("LINES_MATCH", f"All {len(rows)} lines match PO rates", "pass"))
 
@@ -398,6 +421,8 @@ def decide(findings: list):
     priority = "high" if any(x.get("priority") == "high" for x in reasons) else "normal"
     if decision == "approved":
         headline = "Approved for payment"
+    elif reasons[0]["code"] == "NOT_COMPANY_INVOICE":
+        headline = "Not an AP invoice: " + reasons[0]["title"]
     elif decision == "review":
         headline = "Hold for review: " + reasons[0]["title"]
     else:
@@ -406,3 +431,62 @@ def decide(findings: list):
             "reasons": [{"code": r["code"], "title": r["title"], "effect": r["effect"]} for r in reasons],
             "checks_passed": sum(1 for x in findings if x["effect"] == "pass"),
             "checks_total": len(findings)}
+
+
+# ============================================================ 6. learning from reviewers
+def vendor_rule(vendor_id):
+    return db.q1("SELECT * FROM vendor_rules WHERE vendor_id=?", (vendor_id,)) if vendor_id else None
+
+
+def insights(min_cases: int = 2, min_approval: float = 0.75):
+    """Look at what reviewers did with held invoices. A hold that people keep approving is a rule
+    that's too strict for that vendor: the cost is reviewer time and slower payment, with no risk caught.
+    Fraud and duplicate holds are never suggested for relaxing."""
+    never_relax = {"BANK_CHANGED", "DUPLICATE_LIKELY", "DUPLICATE_EXACT", "VENDOR_GSTIN_DIFFERS", "UNKNOWN_VENDOR"}
+    rows = db.q("SELECT id, vendor_id, vendor_name, findings, review FROM runs WHERE review IS NOT NULL")
+    stats = {}
+    import json as _json
+    for r in rows:
+        rev = _json.loads(r["review"])
+        for x in _json.loads(r["findings"] or "[]"):
+            if x["effect"] != "review" or x["code"] in never_relax:
+                continue
+            k = (x["code"], r["vendor_id"])
+            st = stats.setdefault(k, {"code": x["code"], "vendor_id": r["vendor_id"], "vendor_name": r["vendor_name"],
+                                      "title": x["title"], "approved": 0, "rejected": 0, "variances": [], "notes": [], "runs": []})
+            st["approved" if rev["action"] == "approve" else "rejected"] += 1
+            st["runs"].append(r["id"])
+            if rev.get("note"):
+                st["notes"].append(rev["note"])
+            if x["code"] == "PRICE_VARIANCE" and rev["action"] == "approve":
+                st["variances"].append((x.get("evidence") or {}).get("price_var_pct"))
+    out = []
+    for st in stats.values():
+        n = st["approved"] + st["rejected"]
+        rate = st["approved"] / n if n else 0
+        st.update(cases=n, approval_rate=round(rate, 2))
+        if n < min_cases or rate < min_approval:
+            continue
+        current = vendor_rule(st["vendor_id"])
+        if st["code"] == "PRICE_VARIANCE" and [v for v in st["variances"] if v is not None]:
+            worst = max(v for v in st["variances"] if v is not None)
+            proposed = float(int(worst) + 1)  # round up to the next whole percent
+            if current and current["price_tolerance_pct"] >= proposed:
+                continue
+            st.update(kind="price_tolerance", proposed=proposed,
+                      text=f"Reviewers approved {st['approved']} of {n} price holds for {st['vendor_name']} "
+                           f"(up to {worst:+.1f}% over PO). Set {st['vendor_name']}'s price tolerance to {proposed:g}% "
+                           f"so these stop needing a person.",
+                      apply=True)
+        else:
+            st.update(kind="review_rule",
+                      text=f"Reviewers approved {st['approved']} of {n} '{st['title']}' holds for {st['vendor_name']}. "
+                           "Worth checking whether this rule is too strict for them.",
+                      apply=False)
+        out.append(st)
+    return out, list(stats.values())
+
+
+def apply_price_tolerance(vendor_id, pct, reason):
+    db.ex("INSERT OR REPLACE INTO vendor_rules (vendor_id, price_tolerance_pct, reason, created_at) VALUES (?,?,?,?)",
+          (vendor_id, pct, reason, db.now_iso()))

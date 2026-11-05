@@ -3,66 +3,112 @@
     "file": "01_kaveri_stationery_clean.pdf",
     "scenario": "Happy path",
     "expect": "approved",
-    "story": "Clean text PDF. Every line matches PO-24051 exactly, inter-state IGST is correct."
+    "story": "Clean text PDF. Every line matches PO-24051 exactly, inter-state IGST is correct.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "02_nimbus_hosting_sep.pdf",
     "scenario": "Split PO - third of three",
     "expect": "approved",
-    "story": "PO-24060 covers 3 months. Jul and Aug are already billed. Sep uses the last of the PO, so it fits."
+    "story": "PO-24060 covers 3 months. Jul and Aug are already billed. Sep uses the last of the PO, so it fits.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "03_nimbus_hosting_advance_overbill.pdf",
     "scenario": "Split PO - over-billing",
     "expect": "review",
-    "story": "Looks fine on its own, but the PO was for 3 months. Cumulative billing goes past the PO value."
+    "story": "Looks fine on its own, but the PO was for 3 months. Cumulative billing goes past the PO value.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "04_brightspark_resubmitted.pdf",
     "scenario": "Disguised duplicate",
     "expect": "review",
-    "story": "Same invoice as BSE/2526/0042 (already paid) with the number reformatted and a new date."
+    "story": "Same invoice as BSE/2526/0042 (already paid) with the number reformatted and a new date.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "05_sharma_scanned_no_po.pdf",
     "scenario": "Scanned, no PO reference",
     "expect": "review",
-    "story": "Image-only scan with no PO number. The process has to OCR it and infer which open PO it belongs to."
+    "story": "Image-only scan with no PO number. The process has to OCR it and infer which open PO it belongs to.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "06_kaveri_chairs_price_creep.pdf",
     "scenario": "Total matches, unit price doesn't",
     "expect": "review",
-    "story": "Total is within 0.3% of the PO, but 5 fewer chairs at a 14% higher unit price."
+    "story": "Total is within 0.3% of the PO, but 5 fewer chairs at a 14% higher unit price.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "07_brightspark_new_bank_details.pdf",
     "scenario": "Bank details changed",
     "expect": "review",
-    "story": "Everything matches except the bank account, which differs from the vendor master. Classic payment-fraud pattern."
+    "story": "Everything matches except the bank account, which differs from the vendor master. Classic payment-fraud pattern.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "08_quickfix_unknown_vendor.pdf",
     "scenario": "Unknown vendor",
     "expect": "rejected",
-    "story": "Vendor isn't in the master, the GSTIN check digit is wrong and the PO doesn't exist."
+    "story": "Vendor isn't in the master, the GSTIN check digit is wrong and the PO doesn't exist.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "09_kaveri_toner_proforma.pdf",
     "scenario": "Missing invoice number and date",
     "expect": "rejected",
-    "story": "A proforma sent instead of a tax invoice: no invoice number, no date. It can't be booked."
+    "story": "A proforma sent instead of a tax invoice: no invoice number, no date. It can't be booked.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "10_brightspark_wrong_tax_type.pdf",
     "scenario": "Wrong GST type",
     "expect": "rejected",
-    "story": "Vendor and buyer are both in Haryana, so it should be CGST + SGST. IGST was charged. Total is right, tax head is wrong."
+    "story": "Vendor and buyer are both in Haryana, so it should be CGST + SGST. IGST was charged. Total is right, tax head is wrong.",
+    "batch": true,
+    "group": "core"
   },
   {
     "file": "11_sharma_bubblewrap_within_tolerance.pdf",
     "scenario": "Small variance within tolerance",
     "expect": "approved",
-    "story": "Stretch film is 1% above the PO rate. That's inside the 2% price tolerance, so it auto-approves with a note."
+    "story": "Stretch film is 1% above the PO rate. That's inside the 2% price tolerance, so it auto-approves with a note.",
+    "batch": true,
+    "group": "core"
+  },
+  {
+    "file": "12_sharma_boxes_oct_surcharge.pdf",
+    "scenario": "Learning loop 1: price +3.5%",
+    "expect": "review",
+    "story": "Box price is 3.5% over PO (a freight surcharge procurement agreed verbally). Held. Approve it with a note.",
+    "batch": false,
+    "group": "learning"
+  },
+  {
+    "file": "13_sharma_boxes_nov_surcharge.pdf",
+    "scenario": "Learning loop 2: same surcharge again",
+    "expect": "review",
+    "story": "Same surcharge, held again. Approve it too, then check the Runs page: a rule change is suggested.",
+    "batch": false,
+    "group": "learning"
+  },
+  {
+    "file": "14_sharma_boxes_dec_surcharge.pdf",
+    "scenario": "Learning loop 3: after applying the rule",
+    "expect": "review",
+    "story": "Once the suggested tolerance is applied, this one goes straight through. Without it, it's held like the others.",
+    "batch": false,
+    "group": "learning"
   }
 ]

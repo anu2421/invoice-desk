@@ -22,11 +22,14 @@ CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id TEXT, invoice_number TEXT, invoice_date TEXT,
   po_number TEXT, subtotal REAL, tax REAL, total REAL, status TEXT, run_id TEXT, file_hash TEXT,
   line_sig TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS vendor_rules (
+  vendor_id TEXT PRIMARY KEY, price_tolerance_pct REAL, reason TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, created_at TEXT, filename TEXT, stored_path TEXT, file_hash TEXT,
   status TEXT, decision TEXT, final_decision TEXT, vendor_name TEXT, vendor_id TEXT,
   invoice_number TEXT, total REAL, extractor TEXT, duration_ms INTEGER,
-  stages TEXT, extracted TEXT, findings TEXT, output TEXT, review TEXT, error TEXT);
+  stages TEXT, extracted TEXT, findings TEXT, output TEXT, review TEXT, error TEXT,
+  parent_id TEXT);
 """
 
 JSON_COLS = ("stages", "extracted", "findings", "output", "review")
@@ -45,6 +48,9 @@ def conn() -> sqlite3.Connection:
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.executescript(SCHEMA)
+        cols = {r[1] for r in _conn.execute("PRAGMA table_info(runs)")}
+        if "parent_id" not in cols:  # databases created before invoice splitting existed
+            _conn.execute("ALTER TABLE runs ADD COLUMN parent_id TEXT")
         if not _conn.execute("SELECT 1 FROM vendors LIMIT 1").fetchone():
             load_reference(reset_runs=False)
     return _conn
@@ -72,7 +78,7 @@ def load_reference(reset_runs: bool = True):
     """(Re)load vendor master, POs and the seeded ledger from CSV. Optionally wipe run history."""
     with _lock:
         c = conn()
-        for t in ("vendors", "purchase_orders", "po_lines", "ledger"):
+        for t in ("vendors", "purchase_orders", "po_lines", "ledger", "vendor_rules"):
             c.execute(f"DELETE FROM {t}")
         if reset_runs:
             c.execute("DELETE FROM runs")
@@ -106,10 +112,10 @@ def company() -> dict:
 
 
 # ------------------------------------------------------------------ runs
-def create_run(run_id, filename, stored_path, file_hash, stages):
-    ex("INSERT INTO runs (id, created_at, filename, stored_path, file_hash, status, stages, findings) "
-       "VALUES (?,?,?,?,?,?,?,?)",
-       (run_id, now_iso(), filename, str(stored_path), file_hash, "running", json.dumps(stages), "[]"))
+def create_run(run_id, filename, stored_path, file_hash, stages, parent_id=None):
+    ex("INSERT INTO runs (id, created_at, filename, stored_path, file_hash, status, stages, findings, parent_id) "
+       "VALUES (?,?,?,?,?,?,?,?,?)",
+       (run_id, now_iso(), filename, str(stored_path), file_hash, "running", json.dumps(stages), "[]", parent_id))
 
 
 def update_run(run_id, **fields):
@@ -138,6 +144,6 @@ def get_run(run_id):
 
 def list_runs(limit=500):
     rows = q("SELECT id, created_at, filename, status, decision, final_decision, vendor_name, vendor_id, "
-             "invoice_number, total, extractor, duration_ms, findings, review FROM runs ORDER BY created_at DESC, rowid DESC LIMIT ?",
+             "invoice_number, total, extractor, duration_ms, findings, review, output, parent_id FROM runs ORDER BY created_at DESC, rowid DESC LIMIT ?",
              (limit,))
     return [_decode(r) for r in rows]

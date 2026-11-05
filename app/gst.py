@@ -12,10 +12,32 @@ GSTIN_RE = re.compile(r"\b(\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b")
 STATE_CODES = {
     "01": "Jammu and Kashmir", "02": "Himachal Pradesh", "03": "Punjab",
     "04": "Chandigarh", "05": "Uttarakhand", "06": "Haryana", "07": "Delhi",
-    "08": "Rajasthan", "09": "Uttar Pradesh", "10": "Bihar", "19": "West Bengal",
-    "24": "Gujarat", "27": "Maharashtra", "29": "Karnataka", "30": "Goa",
-    "32": "Kerala", "33": "Tamil Nadu", "36": "Telangana", "37": "Andhra Pradesh",
+    "08": "Rajasthan", "09": "Uttar Pradesh", "10": "Bihar", "11": "Sikkim",
+    "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur", "15": "Mizoram",
+    "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+    "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh",
+    "24": "Gujarat", "26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra",
+    "29": "Karnataka", "30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu",
+    "34": "Puducherry", "35": "Andaman and Nicobar Islands", "36": "Telangana",
+    "37": "Andhra Pradesh", "38": "Ladakh",
 }
+_ALIASES = {"uttaranchal": "05", "ut": "05", "new delhi": "07", "dl": "07", "orissa": "21",
+            "pondicherry": "34", "j&k": "01", "hr": "06", "ka": "29", "mh": "27", "tn": "33"}
+
+
+def state_code(value) -> str | None:
+    """'Uttarakhand', 'UTTARAKHAND', 'Uttarakhand (5)', 'Haryana (06)', '06' -> two-digit code."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    m = re.search(r"\(\s*(\d{1,2})\s*\)", s) or re.fullmatch(r"(\d{1,2})", s)
+    if m:
+        return m.group(1).zfill(2)
+    name = re.sub(r"[^a-z& ]", "", s.lower()).strip()
+    for code, state in STATE_CODES.items():
+        if state.lower() == name:
+            return code
+    return _ALIASES.get(name)
 
 
 def checksum_char(first14: str) -> str:

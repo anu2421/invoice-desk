@@ -6,7 +6,7 @@ from collections import Counter
 
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
-from . import config, db, pipeline
+from . import config, db, pipeline, rules
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
@@ -76,7 +76,7 @@ def batch():
 
     def go():
         try:
-            for m in manifest():
+            for m in [m for m in manifest() if m.get("batch", True)]:
                 rid = pipeline.start((config.SAMPLES_DIR / m["file"]).read_bytes(), m["file"])
                 while (db.get_run(rid) or {}).get("status") == "running":
                     time.sleep(0.2)
@@ -84,7 +84,7 @@ def batch():
             _batch_lock.release()
 
     threading.Thread(target=go, daemon=True).start()
-    return jsonify(started=len(manifest()))
+    return jsonify(started=len([m for m in manifest() if m.get("batch", True)]))
 
 
 @app.get("/api/runs")
@@ -146,7 +146,8 @@ def review(rid):
 
 @app.get("/api/stats")
 def stats():
-    rows = [r for r in db.list_runs(5000) if r["status"] == "done"]
+    # a split PDF isn't an invoice itself; its parts are counted instead
+    rows = [r for r in db.list_runs(5000) if r["status"] == "done" and r["decision"] != "split"]
     n = len(rows)
     auto = sum(r["decision"] == "approved" for r in rows)
     final = Counter(r["final_decision"] for r in rows)
@@ -182,9 +183,32 @@ def reference():
                    ledger=db.q("SELECT * FROM ledger ORDER BY COALESCE(invoice_date,'') DESC, id DESC"))
 
 
+@app.get("/api/insights")
+def insights():
+    suggestions, all_stats = rules.insights()
+    return jsonify(suggestions=suggestions, rules=all_stats,
+                   vendor_rules=db.q("SELECT r.*, v.name FROM vendor_rules r JOIN vendors v USING (vendor_id)"))
+
+
+@app.post("/api/insights/apply")
+def apply_insight():
+    body = request.get_json(silent=True) or {}
+    vid, pct = body.get("vendor_id"), body.get("pct")
+    if not vid or not isinstance(pct, (int, float)) or not (0 < pct <= 10):
+        return jsonify(error="Need a vendor and a tolerance between 0 and 10%."), 400
+    match = [x for x in rules.insights()[0] if x["vendor_id"] == vid and x.get("kind") == "price_tolerance"]
+    if not match:
+        return jsonify(error="No reviewer evidence for this change."), 400
+    m = match[0]
+    reason = f"learned from {m['approved']} reviewer approvals on {', '.join(m['runs'])}"
+    rules.apply_price_tolerance(vid, float(pct), reason)
+    return jsonify(ok=True, reason=reason)
+
+
 @app.get("/api/rules")
 def rules_cfg():
     return jsonify(rules=config.RULES, extractor=config.active_extractor(),
+                   vendor_rules=db.q("SELECT r.*, v.name FROM vendor_rules r JOIN vendors v USING (vendor_id)"),
                    stages=[{"key": k, "name": n, "purpose": p} for k, n, p in pipeline.STAGES])
 
 

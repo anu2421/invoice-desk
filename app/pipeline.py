@@ -40,15 +40,22 @@ def new_run_id():
     return "R-" + uuid.uuid4().hex[:6].upper()
 
 
-def start(file_bytes: bytes, filename: str) -> str:
+def start(file_bytes: bytes, filename: str, parent_id: str | None = None, wait_for: str | None = None) -> str:
     run_id = new_run_id()
     ext = Path(filename).suffix.lower() or ".pdf"
     stored = config.UPLOAD_DIR / f"{run_id}{ext}"
     stored.write_bytes(file_bytes)
     h = hashlib.sha256(file_bytes).hexdigest()
     run = Run(run_id)
-    db.create_run(run_id, filename, stored, h, run.stages)
-    threading.Thread(target=execute, args=(run, stored, filename, h), daemon=True).start()
+    db.create_run(run_id, filename, stored, h, run.stages, parent_id)
+
+    def go():
+        # split parts run one after another, since each can change the ledger the next one checks
+        while wait_for and (db.get_run(wait_for) or {}).get("status") == "running":
+            time.sleep(0.2)
+        execute(run, stored, filename, h)
+
+    threading.Thread(target=go, daemon=True).start()
     return run_id
 
 
@@ -139,11 +146,25 @@ def execute(run: Run, path: Path, filename: str, file_hash: str):
                     f"({info.get('ocr_confidence', 0):.0%} mean word confidence)"), d, [
                 rules.F("SCANNED", "Scanned document, read with OCR", "info",
                         "OCR text is less reliable, so field confidence is lowered.")]
+        if info["pages"] > 1:
+            groups = extract.split_documents(ctx["path"])
+            if len(groups) > 1:
+                ctx["split"] = groups
+                d["documents"] = groups
+                dropped = [p + 1 for g in groups for p in g["dropped"]]
+                return (f"{len(groups)} separate documents in one PDF; each will be processed on its own",
+                        d, [rules.F("MULTI_DOCUMENT", f"PDF holds {len(groups)} documents", "info",
+                                    "; ".join(f"{g['number'] or 'unnumbered'} on page{'s' if len(g['pages']) > 1 else ''} "
+                                              f"{', '.join(str(p + 1) for p in g['pages'])}" for g in groups)
+                                    + (f". Page {', '.join(map(str, dropped))} repeats an earlier page and was dropped."
+                                       if dropped else ""))])
         return f"Text layer found · {info['pages']} page(s), {info['chars']} characters", d, []
 
     if not _stage(run, "read", read):
         _skip(run, [k for k, *_ in STAGES[2:-1]], "Skipped: document could not be read")
         return finish(run, t_start, None, None, None, company)
+    if ctx.get("split"):
+        return split_run(run, ctx["path"], filename, ctx["split"])
 
     # ---------------------------------------------------------------- extract
     def do_extract():
@@ -184,11 +205,14 @@ def execute(run: Run, path: Path, filename: str, file_hash: str):
             filled = extract.merge_passes(parsed, alt)
             if filled:
                 details["second_ocr_pass"] = f"Filled {', '.join(filled)} from a second OCR pass"
+        # Is our company named anywhere on the document? (A bill to a person won't mention us.)
+        key = company["name"].split()[0].lower()
+        fields["mentions_company"] = key in (info.get("text") or "").lower() if info.get("text") else None
         ctx["fields"] = fields
         details["extractor"] = used
         details["fields"] = {k: fields.get(k) for k in (
             "document_title", "vendor_name", "vendor_gstin", "buyer_gstin", "invoice_number", "invoice_date",
-            "po_number", "subtotal", "total", "bank_account", "ifsc")}
+            "po_number", "subtotal", "total", "bank_account", "ifsc", "buyer_name", "place_of_supply")}
         details["line_items"] = fields.get("line_items")
         details["taxes"] = fields.get("taxes")
         details["confidence"] = fields.get("confidence")
@@ -252,6 +276,30 @@ def execute(run: Run, path: Path, filename: str, file_hash: str):
     return finish(run, t_start, f, v, ctx.get("po"), company)
 
 
+# ==================================================================== multi-invoice PDFs
+def split_run(run, path, filename, groups):
+    """Write each document to its own PDF and process it as a child run."""
+    stem = Path(filename).stem
+    children, prev = [], None
+    for i, g in enumerate(groups, 1):
+        part = config.UPLOAD_DIR / f"{run.id}-part{i}.pdf"
+        extract.write_pages(path, g["pages"], part)
+        pages = ", ".join(str(p + 1) for p in g["pages"])
+        name = f"{stem} · part {i} of {len(groups)} (page{'s' if len(g['pages']) > 1 else ''} {pages}).pdf"
+        prev = start(part.read_bytes(), name, parent_id=run.id, wait_for=prev)
+        children.append({"id": prev, "number": g["number"], "pages": [p + 1 for p in g["pages"]],
+                         "dropped": [p + 1 for p in g["dropped"]]})
+    _skip(run, [k for k, *_ in STAGES[2:-1]], "Not needed: each document is checked in its own run")
+    s = run.stage("decide")
+    output = {"kind": "split", "decision": "split", "children": children,
+              "headline": f"Split into {len(groups)} invoices",
+              "next": "Each document is processed separately below, with its own decision."}
+    s.update(status="done", summary=f"Split into {len(groups)} runs: " + ", ".join(c["id"] for c in children),
+             details={"output": output}, findings=[], compute_ms=0, duration_ms=0)
+    processing = sum(x["compute_ms"] or 0 for x in run.stages)
+    run.save(status="done", decision="split", final_decision="split", output=output, duration_ms=round(processing))
+
+
 # ==================================================================== decide + output
 def finish(run, t_start, f, vendor, po, company):
     def decide():
@@ -299,6 +347,11 @@ def build_output(run, d, f, vendor, po, company):
     asks = [x["vendor_ask"] for x in reasons if x.get("vendor_ask")]
     fraud = any(x["code"] == "BANK_CHANGED" for x in reasons)
 
+    if reasons and reasons[0]["code"] == "NOT_COMPANY_INVOICE":
+        return {**base, "kind": "rerouted", "queue": "Employee expenses",
+                "next": "Not booked in accounts payable. If it's a business expense, the employee claims it through "
+                        "expense reimbursement with this bill attached. No email goes to the seller."}
+
     if d["decision"] == "review":
         owner = next((x["owner"] for x in reasons if x.get("owner")), "AP clerk")
         if vendor:
@@ -306,6 +359,12 @@ def build_output(run, d, f, vendor, po, company):
         out = {**base, "kind": "review", "queue": owner,
                "checklist": [f"{x['title']}: {x['detail']}" if x.get("detail") else x["title"] for x in reasons],
                "next": f"Held in the {owner} queue. Not paid until someone approves it."}
+        if f.get("invoice_date"):
+            # holds are where late payments come from, so show the clock
+            terms = vendor["payment_terms_days"] if vendor else 30
+            due = date.fromisoformat(f["invoice_date"]) + timedelta(days=terms)
+            left = (due - date.today()).days
+            out["due"] = {"date": due.isoformat(), "days_left": left, "terms": f"Net {terms}"}
         if fraud:
             out["warning"] = ("Don't contact the vendor using details on this invoice. Call the number in the vendor master "
                               "to confirm the bank change, then update the master before approving.")
