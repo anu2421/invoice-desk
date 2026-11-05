@@ -1,0 +1,6 @@
+vendor_id,name,gstin,state,status,bank_name,bank_account,ifsc,payment_terms_days,email,address
+V101,Kaveri Office Supplies Pvt Ltd,33AABCK7712M1ZG,Tamil Nadu,approved,Indian Bank,6123004455,IDIB000T012,30,accounts@kaverioffice.example,"22 Anna Salai, Chennai 600002"
+V102,Sharma Packaging Industries,27AADFS3390Q1ZJ,Maharashtra,approved,Bank of Maharashtra,60298811402,MAHB0000921,45,billing@sharmapack.example,"Gala 7, MIDC Bhosari, Pune 411026"
+V103,Nimbus Cloud Services LLP,29AAJFN5521C1ZE,Karnataka,approved,ICICI Bank,002405017733,ICIC0000024,30,ar@nimbuscloud.example,"4th Floor, 80 Feet Road, Koramangala, Bengaluru 560034"
+V104,BrightSpark Electricals,06ABRPB8813L1ZB,Haryana,approved,Axis Bank,917020045523781,UTIB0000412,15,brightspark.elec@example.com,"Shop 3, Sadar Bazaar, Gurugram 122001"
+V105,Delta Freight Carriers,07AACCD6604R1ZA,Delhi,blocked,Punjab National Bank,0151002100034567,PUNB0015100,30,accounts@deltafreight.example,"Transport Nagar, New Delhi 110033"

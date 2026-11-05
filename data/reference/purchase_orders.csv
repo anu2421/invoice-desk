@@ -1,0 +1,11 @@
+po_number,vendor_id,po_date,status,description,total_value
+PO-24033,V102,2026-09-10,open,Packaging stock - Q3 replenishment,97000.00
+PO-24051,V101,2026-09-22,open,Stationery - October,74150.00
+PO-24058,V101,2026-09-30,open,Office chairs - new floor,272000.00
+PO-24060,V103,2026-06-25,open,Managed hosting retainer Jul-Sep 2026,600000.00
+PO-24063,V101,2026-10-05,open,Printer consumables,87000.00
+PO-24066,V105,2026-08-18,open,Inbound freight - August,114000.00
+PO-24068,V102,2026-10-01,open,Protective packaging,97800.00
+PO-24072,V104,2026-09-05,open,Store lighting upgrade,210000.00
+PO-24075,V104,2026-10-08,open,Electrical panel - warehouse,115500.00
+PO-24079,V104,2026-10-12,open,Ventilation - stockroom,111000.00
