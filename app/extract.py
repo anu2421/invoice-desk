@@ -427,16 +427,16 @@ def _gemini(data: str):
     gens = [{**base, "thinkingConfig": {"thinkingLevel": lvl}} for lvl in ("minimal", "low")] + [base]
     errors, started = [], _t.perf_counter()
     for model in models:
-        if _t.perf_counter() - started > 50:
+        if _t.perf_counter() - started > 30:
             break
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         for gen in gens:
             body = {"contents": [{"parts": [{"text": PROMPT}, {"inline_data": {"mime_type": "application/pdf", "data": data}}]}],
                     "generationConfig": gen}
             try:
-                r = requests.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=25)
+                r = requests.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=15)
             except requests.Timeout:
-                errors.append(f"{model}: no reply in 25 s")
+                errors.append(f"{model}: no reply in 15 s")
                 break
             if r.status_code == 200:
                 parts = r.json()["candidates"][0]["content"]["parts"]

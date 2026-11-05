@@ -365,7 +365,10 @@ def match_po(f: dict, vendor: dict | None):
                      + (f" Quantity is {abs(r['qty_var']):g} {'fewer' if r['qty_var'] < 0 else 'more'} than ordered, so the line "
                         f"total is {inr(r['invoice']['amount'])} against {inr(r['po']['qty'] * r['po']['unit_price'])} on the PO "
                         f"({(r['invoice']['amount'] / (r['po']['qty'] * r['po']['unit_price']) - 1) * 100:+.1f}%). A check on totals alone would have passed it."
-                        if r.get('qty_var') else ""),
+                        # only worth saying when the totals really do line up (fewer units at a higher price);
+                        # a partial delivery against a blanket PO is normal and not this pattern
+                        if r.get('qty_var') and abs(r['invoice']['amount'] / (r['po']['qty'] * r['po']['unit_price']) - 1) * 100
+                        <= R["amount_tolerance_pct"] else ""),
                      evidence=r, owner="Procurement",
                      vendor_ask=f"{r['po']['description']} is billed at {inr(r['invoice']['unit_price'])} against our PO rate of "
                                 f"{inr(r['po']['unit_price'])}. Please confirm or reissue at the PO rate."))
