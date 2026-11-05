@@ -287,3 +287,24 @@ pre.text { background: #F3F6F4; border: 1px solid var(--rule-soft); border-radiu
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ------------------------------------------------------------------ additions */
+.tray-sub { border-top: 1px solid var(--rule); }
+.tray-sub h2 { font-size: 1rem; }
+.stamp.split { --c: var(--ink-2); }
+.stamp.rerouted { --c: var(--pen); }
+.parts { margin: 14px 0 0; padding-left: 20px; }
+.parts li { margin: 10px 0; display: grid; gap: 2px; }
+.part-status { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.due { margin-top: 14px; padding: 10px 14px; border-radius: var(--r-sm); background: var(--rule-soft); font-size: 0.9rem; }
+.due.soon { background: var(--hold-soft); color: #5C3A03; }
+.due.late { background: var(--stop-soft); color: #6E1A13; }
+.learn { border-color: var(--pen); }
+.learn .panel-head { background: var(--pen-soft); border-radius: var(--r-md) var(--r-md) 0 0; }
+.sugg { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--rule-soft); }
+.sugg p { font-size: 0.9rem; }
+.sugg .btn { margin-top: 10px; }
+.applied { padding: 8px 10px; background: var(--ok-soft); border-radius: var(--r-sm); margin-bottom: 10px; }
+.problems td { font-size: 0.86rem; line-height: 1.45; }
+.problems td:first-child { min-width: 150px; }
+.problems td:nth-child(2) { color: var(--ink-2); max-width: 340px; }

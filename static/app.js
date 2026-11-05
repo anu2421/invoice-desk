@@ -13,12 +13,13 @@ const inrShort = (n) => {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const fdate = (iso) => { if (!iso) return "—"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${+d} ${MONTHS[+m - 1]} ${y}`; };
 const ftime = (iso) => { if (!iso) return ""; const d = new Date(iso); return d.toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); };
-const DECISION = { approved: "Approved", review: "On hold", rejected: "Rejected", running: "Processing" };
-const STAMP = { approved: ["APPROVED", "for payment"], review: ["ON HOLD", "needs review"], rejected: ["RETURNED", "to vendor"] };
+const DECISION = { approved: "Approved", review: "On hold", rejected: "Rejected", running: "Processing", split: "Split" };
+const STAMP = { approved: ["APPROVED", "for payment"], review: ["ON HOLD", "needs review"], rejected: ["RETURNED", "to vendor"],
+  split: ["SPLIT", "into separate invoices"], rerouted: ["NOT AP", "sent to expense claims"] };
 const FIELD_LABELS = {
   document_title: "Document type", vendor_name: "Vendor", vendor_gstin: "Vendor GSTIN", buyer_gstin: "Billed-to GSTIN",
   invoice_number: "Invoice number", invoice_date: "Invoice date", po_number: "PO number", subtotal: "Taxable value",
-  total: "Total payable", bank_account: "Bank account", ifsc: "IFSC",
+  total: "Total payable", bank_account: "Bank account", ifsc: "IFSC", buyer_name: "Billed to", place_of_supply: "Place of supply",
 };
 const EFFECT_ICON = { pass: "✓", info: "i", review: "!", reject: "×" };
 
@@ -66,6 +67,11 @@ async function loadReader() {
 /* ------------------------------------------------------------------ process invoice */
 async function renderNew() {
   const samples = await api("/api/samples");
+  const core = samples.filter((s) => s.group !== "learning"), learning = samples.filter((s) => s.group === "learning");
+  const row = (s) => `<li><button class="sample" data-file="${esc(s.file)}">
+      <span class="n">${esc(s.file.slice(0, 2))}</span>
+      <span><span class="t">${esc(s.scenario)}</span><br><span class="s">${esc(s.story)}</span></span>
+      <span class="go">Run</span></button></li>`;
   view.innerHTML = `
     <div class="page-head">
       <div><h1>Process an invoice</h1>
@@ -81,15 +87,13 @@ async function renderNew() {
       </label>
       <section class="tray" aria-labelledby="tray-h">
         <div class="tray-head">
-          <div><h2 id="tray-h">Test invoices</h2><p class="muted small">Eleven realistic invoices from five vendors, each built to test one situation.</p></div>
-          <button class="btn" id="batch">Run all ${samples.length}</button>
+          <div><h2 id="tray-h">Test invoices</h2><p class="muted small">${core.length} realistic invoices from five vendors, each built to test one situation.</p></div>
+          <button class="btn" id="batch">Run all ${core.length}</button>
         </div>
-        <ul class="tray-list">
-          ${samples.map((s, i) => `<li><button class="sample" data-file="${esc(s.file)}">
-              <span class="n">${String(i + 1).padStart(2, "0")}</span>
-              <span><span class="t">${esc(s.scenario)}</span><br><span class="s">${esc(s.story)}</span></span>
-              <span class="go">Run</span></button></li>`).join("")}
-        </ul>
+        <ul class="tray-list">${core.map(row).join("")}</ul>
+        ${learning.length ? `<div class="tray-head tray-sub"><div><h2>Learning from reviewers</h2>
+          <p class="muted small">Run 12, approve it with a note. Run 13, approve it. A rule change appears on the Runs page; apply it, then run 14.</p></div></div>
+          <ul class="tray-list">${learning.map(row).join("")}</ul>` : ""}
       </section>
     </div>`;
   const drop = $("#drop"), input = $("#file");
@@ -143,6 +147,7 @@ async function renderRun(id) {
         ${run.invoice_number ? `<span>Invoice ${esc(run.invoice_number)}</span>` : ""}
         ${run.total ? `<span>${inr(run.total)}</span>` : ""}
         ${run.extractor ? `<span>Read by ${esc(run.extractor)}</span>` : ""}
+        ${run.parent_id ? `<span>Split from <a href="#/run/${esc(run.parent_id)}">${esc(run.parent_id)}</a></span>` : ""}
         ${done && run.duration_ms != null ? `<span>${run.duration_ms >= 1000 ? (run.duration_ms / 1000).toFixed(1) + " s" : run.duration_ms + " ms"} processing time</span>` : ""}
       </div>`;
 
@@ -150,9 +155,11 @@ async function renderRun(id) {
     if (!done) {
       st.innerHTML = `<div class="waiting"><span class="spinner"></span>Stage ${idx + 1 || 1} of ${stages.length}: ${esc(active ? active.name : "starting")}</div>`;
     } else if (!st.querySelector(".stamp") || st.dataset.d !== run.final_decision) {
-      const [a, b] = STAMP[run.final_decision] || ["DONE", ""];
+      const kind = (run.output || {}).kind;
+      const sk = kind === "rerouted" && !run.review ? "rerouted" : run.final_decision;
+      const [a, b] = STAMP[sk] || ["DONE", ""];
       const overridden = run.review ? `<small>by reviewer</small>` : `<small>${b}</small>`;
-      st.innerHTML = `<div class="stamp ${run.final_decision} ${landed ? "" : "land"}" role="img" aria-label="${DECISION[run.final_decision]}">${a}${overridden}</div>`;
+      st.innerHTML = `<div class="stamp ${sk} ${landed ? "" : "land"}" role="img" aria-label="${esc(a)}">${a}${overridden}</div>`;
       st.dataset.d = run.final_decision; landed = true;
     }
 
@@ -296,8 +303,16 @@ function decisionPanel(run) {
       <dt>Taxable value</dt><dd>${inr(p.taxable_value)}</dd><dt>GST (input credit)</dt><dd>${inr(p.gst)}</dd><dt>Total payable</dt><dd><b>${inr(p.total_payable)}</b></dd>
       <dt>Due</dt><dd>${fdate(p.due_date)} (${esc(p.payment_terms)})</dd><dt>Pay to</dt><dd>${esc(p.pay_to)}</dd></dl>
       ${o.notes && o.notes.length ? `<p class="small muted" style="margin-top:12px">Noted, no action needed: ${o.notes.map(esc).join("; ")}</p>` : ""}`;
+  } else if (o.kind === "split") {
+    out = `<ol class="parts">${o.children.map((c) => `<li><a href="#/run/${esc(c.id)}"><b>${esc(c.number || "Unnumbered document")}</b></a>
+        <span class="muted small">page${c.pages.length > 1 ? "s" : ""} ${c.pages.join(", ")}${c.dropped.length ? ` · repeated page ${c.dropped.join(", ")} dropped` : ""}</span>
+        <span class="part-status" data-child="${esc(c.id)}"><span class="tag running">Processing</span></span></li>`).join("")}</ol>`;
+  } else if (o.kind === "rerouted") {
+    out = "";
   } else if (o.kind === "review") {
-    out = `${o.warning ? `<div class="warn">${esc(o.warning)}</div>` : ""}
+    const due = o.due ? (o.due.days_left < 0 ? `<div class="due late"><b>Payment was due ${fdate(o.due.date)}</b> (${esc(o.due.terms)}), ${-o.due.days_left} day${o.due.days_left === -1 ? "" : "s"} ago. Every day on hold now is a late payment.</div>`
+      : `<div class="due ${o.due.days_left <= 7 ? "soon" : ""}"><b>Payment due ${fdate(o.due.date)}</b> (${esc(o.due.terms)}): ${o.due.days_left} day${o.due.days_left === 1 ? "" : "s"} left to resolve this hold without paying late.</div>`) : "";
+    out = `${due}${o.warning ? `<div class="warn">${esc(o.warning)}</div>` : ""}
       ${o.vendor_email ? emailBlock(o.vendor_email, "Draft query to vendor, send after review") : ""}`;
   } else if (o.kind === "returned" && o.vendor_email) {
     out = emailBlock(o.vendor_email, "Ready to send");
@@ -314,13 +329,29 @@ function decisionPanel(run) {
   return `<section class="panel decision ${run.final_decision}">
     <div class="panel-body">
       <p class="headline">${esc(o.headline || DECISION[run.final_decision])}</p>
-      <p class="next">${esc(o.next || "")}${o.queue ? ` Priority: ${esc(o.priority || "normal")}.` : ""}</p>
+      <p class="next">${esc(o.next || "")}${o.queue && o.kind === "review" ? ` Priority: ${esc(o.priority || "normal")}.` : ""}</p>
       ${reasons.length ? `<ol class="reason-list">${reasons.map((x) => `<li><b>${esc(x.title)}</b> <a href="#" data-goto="${x.stage}" class="small">${esc(stageName(x.stage))}</a>${x.detail ? `<div class="small muted">${esc(x.detail)}</div>` : ""}</li>`).join("")}</ol>` : ""}
       ${out}${reviewUi}
     </div></section>`;
 }
 
+function fillParts() {
+  const els = [...document.querySelectorAll("[data-child]")];
+  if (!els.length) return;
+  let pending = 0;
+  Promise.all(els.map(async (el) => {
+    try {
+      const c = await api(`/api/runs/${el.dataset.child}`);
+      const k = c.status === "running" ? "running" : ((c.output || {}).kind === "rerouted" && !c.review ? "rerouted" : c.final_decision);
+      if (k === "running") pending++;
+      const label = k === "rerouted" ? "Not AP" : DECISION[k];
+      el.innerHTML = `<span class="tag ${k === "rerouted" ? "plain" : k}">${label}</span> <span class="small muted">${esc((c.output || {}).headline || "")}</span>`;
+    } catch { pending++; }
+  })).then(() => { if (pending && document.querySelector("[data-child]")) timers.push(setTimeout(fillParts, 800)); });
+}
+
 function bindDecision(run, onUpdate) {
+  fillParts();
   $("#center").querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
     try { await navigator.clipboard.writeText(b.dataset.copy); toast("Email copied"); } catch { toast("Couldn't copy; select the text instead"); }
   }));
@@ -337,7 +368,7 @@ function bindDecision(run, onUpdate) {
 async function renderRuns() {
   let filter = "all", confirmReset = false;
   const draw = async () => {
-    const [runs, st] = await Promise.all([api("/api/runs"), api("/api/stats")]);
+    const [runs, st, ins] = await Promise.all([api("/api/runs"), api("/api/stats"), api("/api/insights")]);
     const anyRunning = runs.some((r) => r.status === "running");
     if (!runs.length) {
       view.innerHTML = `<div class="page-head"><div><h1>Runs</h1></div></div>
@@ -369,15 +400,23 @@ async function renderRuns() {
           <div class="wrap-x"><table class="t"><thead><tr><th>Run</th><th>Received</th><th>Vendor</th><th>Invoice</th><th class="num">Amount</th><th>Decision</th><th>Main reason</th><th class="num">Time</th></tr></thead><tbody>
           ${rows.map((r) => {
             const d = r.status === "running" ? "running" : r.final_decision;
+            const rer = (r.output || {}).kind === "rerouted" && !r.review;
             return `<tr class="click" data-id="${esc(r.id)}" tabindex="0"><td class="nw"><b>${esc(r.id)}</b></td><td class="muted nw">${ftime(r.created_at)}</td>
               <td>${esc(r.vendor_name || r.filename)}</td><td>${esc(r.invoice_number || "—")}</td><td class="num">${inr(r.total)}</td>
-              <td><span class="tag ${d}">${DECISION[d]}</span>${r.review ? `<span class="overridden">by reviewer, was ${DECISION[r.decision].toLowerCase()}</span>` : ""}</td>
-              <td class="exc">${esc(r.exceptions[0] || (r.status === "running" ? "" : "All checks passed"))}${r.exceptions.length > 1 ? ` <span class="faint">+${r.exceptions.length - 1}</span>` : ""}</td>
+              <td><span class="tag ${rer ? "plain" : d === "split" ? "plain" : d}">${rer ? "Not AP" : d === "split" ? `Split into ${(r.output || {}).children.length}` : DECISION[d]}</span>${r.review ? `<span class="overridden">by reviewer, was ${DECISION[r.decision].toLowerCase()}</span>` : ""}</td>
+              <td class="exc">${esc(d === "split" ? "Several invoices in one PDF" : r.exceptions[0] || (r.status === "running" ? "" : "All checks passed"))}${d !== "split" && r.exceptions.length > 1 ? ` <span class="faint">+${r.exceptions.length - 1}</span>` : ""}</td>
               <td class="num muted nw">${r.duration_ms != null ? (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + " s" : r.duration_ms + " ms") : ""}</td></tr>`;
           }).join("") || `<tr><td colspan="8" class="muted">No runs match this filter.</td></tr>`}
           </tbody></table></div>
         </section>
         <aside>
+          ${ins.suggestions.length || ins.vendor_rules.length ? `<section class="panel learn"><div class="panel-head"><h2>Learned from reviewers</h2></div><div class="panel-body">
+            ${ins.suggestions.map((x) => `<div class="sugg"><p>${esc(x.text)}</p>
+              ${x.notes.length ? `<p class="small muted">Reviewer notes: “${esc(x.notes[x.notes.length - 1])}”</p>` : ""}
+              ${x.apply ? `<button class="btn primary" data-apply="${esc(x.vendor_id)}" data-pct="${x.proposed}">Apply ${x.proposed}% tolerance for ${esc(x.vendor_name)}</button>` : ""}</div>`).join("")}
+            ${ins.vendor_rules.map((v) => `<p class="small applied"><b>${esc(v.name)}</b>: price tolerance ${v.price_tolerance_pct}%, ${esc(v.reason)}.</p>`).join("")}
+            <p class="small faint">Fraud and duplicate holds are never suggested for relaxing, however often they're approved.</p>
+          </div></section>` : ""}
           <section class="panel"><div class="panel-head"><h2>Why invoices stopped</h2></div><div class="panel-body">
             ${st.exceptions.length ? `<ul class="hbars">${st.exceptions.map(([k, n]) => `<li><div class="lbl"><span>${esc(k)}</span><b>${n}</b></div><div class="track"><b style="width:${(n / maxExc) * 100}%"></b></div></li>`).join("")}</ul>` : `<p class="muted">Nothing has been stopped yet.</p>`}
           </div></section>
@@ -387,6 +426,13 @@ async function renderRuns() {
         </aside>
       </div>`;
     view.querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => { filter = b.dataset.f; draw(); }));
+    view.querySelectorAll("[data-apply]").forEach((b) => b.addEventListener("click", async () => {
+      try {
+        await api("/api/insights/apply", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ vendor_id: b.dataset.apply, pct: +b.dataset.pct }) });
+        toast("Rule updated. The next matching invoice uses it"); draw();
+      } catch (e) { toast(e.message); }
+    }));
     view.querySelectorAll("tr[data-id]").forEach((tr) => {
       tr.addEventListener("click", () => (location.hash = `#/run/${tr.dataset.id}`));
       tr.addEventListener("keydown", (e) => e.key === "Enter" && (location.hash = `#/run/${tr.dataset.id}`));
@@ -438,6 +484,21 @@ async function renderRules() {
     <div class="page-head"><div><h1>How it decides</h1><p class="muted">The model reads the invoice. Rules written in code make the decision, so every outcome can be traced to a specific check and the same invoice always gets the same answer.</p></div></div>
     <section class="panel"><div class="panel-head"><h2>The process</h2></div>
       <ol class="map">${r.stages.map((s) => `<li><h3>${esc(s.name)}</h3><p>${esc(s.purpose)}</p></li>`).join("")}</ol></section>
+    <section class="panel" style="margin-top:22px"><div class="panel-head"><h2>The problems it's built around</h2><span class="faint small">From AP surveys, and from testing on real invoices</span></div>
+      <div class="wrap-x"><table class="t problems"><thead><tr><th>What goes wrong in AP</th><th>Evidence</th><th>What this process does about it</th></tr></thead><tbody>
+        <tr><td><b>Exceptions eat the team's time</b></td><td>The top AP challenge for 53% of AP leaders. Typical teams see exceptions on 22% of invoices, best-in-class on 9%. <a href="https://www.datocms-assets.com/80283/1744404602-ardent-partners-ap-metrics-that-matter-in-2025-pagero-final.pdf" target="_blank" rel="noopener">Ardent Partners, 2025</a></td>
+          <td>Every hold says exactly why and who owns it. Holds that reviewers keep approving become a suggested rule change, so the same false alarm stops recurring.</td></tr>
+        <tr><td><b>Approvals take too long</b></td><td>Second-biggest challenge (41%). Average cycle time 9.2 days; best-in-class 3.1. <a href="https://www.datocms-assets.com/80283/1744404602-ardent-partners-ap-metrics-that-matter-in-2025-pagero-final.pdf" target="_blank" rel="noopener">Ardent Partners, 2025</a></td>
+          <td>Decisions in seconds. Held invoices show the payment due date and days left, so the queue is worked before invoices go late.</td></tr>
+        <tr><td><b>Vendor impersonation and payment fraud</b></td><td>79% of organisations faced payments fraud; business email compromise was the top route (63%), vendor impersonation up 11 points to 45%. <a href="https://www.financialprofessionals.org/about/learn-more/press-releases/Details/survey-79-percent-of-organizations-were-victims-of-attempted-or-actual-payments-fraud-activity-in-2024" target="_blank" rel="noopener">AFP, 2025</a></td>
+          <td>Bank details are never taken from an invoice. A changed account is held at high priority, with no email to the address on the invoice. Lookalike vendors (name matches, GSTIN doesn't) are held too. These holds are never relaxed by learning.</td></tr>
+        <tr><td><b>Duplicate payments</b></td><td>A median 1.5% of disbursements are duplicate or erroneous. <a href="https://www.docsumo.com/blog/accounts-payable-statistics" target="_blank" rel="noopener">APQC, via Docsumo</a></td>
+          <td>File fingerprint, exact number, and reformatted number (BSE/2526/0042 = BSE-2526-42), plus amount and PO with a date window so monthly retainers aren't flagged.</td></tr>
+        <tr><td><b>Documents aren't one clean invoice</b></td><td>77% of organisations still key invoices in by hand (<a href="https://www.docsumo.com/blog/accounts-payable-statistics" target="_blank" rel="noopener">IFOL, via Docsumo</a>). Real marketplace PDFs I tested held 2–3 documents from different sellers, one with a repeated page.</td>
+          <td>Splits multi-invoice PDFs into one run per document and drops repeated pages. Personal bills (billed to an individual, no GSTIN) go to expense claims instead of being paid as supplier invoices.</td></tr>
+      </tbody></table></div></section>
+    ${r.vendor_rules && r.vendor_rules.length ? `<section class="panel" style="margin-top:22px"><div class="panel-head"><h2>Vendor-specific rules</h2><span class="faint small">Applied from reviewer decisions</span></div><div class="panel-body">
+      ${r.vendor_rules.map((v) => `<p><b>${esc(v.name)}</b>: unit price may be up to ${v.price_tolerance_pct}% over PO (${esc(v.reason)}).</p>`).join("")}</div></section>` : ""}
     <div class="two">
       <section class="panel"><div class="panel-head"><h2>Decision rule</h2></div><div class="panel-body policy">
         <div><span class="tag rejected">Rejected</span><span>Any check that means the invoice can't be booked as-is: proforma instead of tax invoice, missing number or date, invalid GSTIN, wrong GST type, unknown or blocked vendor, exact duplicate. A correction email is drafted for the vendor.</span></div>
@@ -462,6 +523,7 @@ async function renderRules() {
         <li>Matching is two-way: invoice against PO. There's no goods receipt data, so quantity is checked against the PO, not against what arrived.</li>
         <li>Only posted invoices count toward a PO's used value. Held invoices are shown as exposure but don't block others.</li>
         <li>Recurring bills (monthly retainers) legitimately share amount and PO, so those alone only count as a duplicate signal when the dates are close.</li>
+        <li>Place of supply comes from the invoice itself, then the buyer's GSTIN, then our own state. Testing on real food-delivery invoices showed why: assuming our state would have wrongly rejected a correct intra-state bill.</li>
         <li>A changed bank account is never accepted from an invoice. It's verified out of band and updated in the vendor master first.</li>
         <li>On a scan, a field the OCR couldn't read isn't treated as missing from the invoice. It's held for a person to key in, not bounced back to the vendor.</li>
         <li>Time saved assumes about ${R.manual_minutes_per_invoice} minutes of manual handling per invoice, and half that for ones a person still reviews.</li>
