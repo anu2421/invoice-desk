@@ -321,7 +321,7 @@ def _post(url, body, headers, name):
     """POST with one retry on rate limits / server errors, and a readable error message."""
     import time as _t
     for attempt in range(2):
-        r = requests.post(url, json=body, headers=headers, timeout=90)
+        r = requests.post(url, json=body, headers=headers, timeout=60)
         if r.status_code in (429, 500, 502, 503, 504) and attempt == 0:
             _t.sleep(2)
             continue
@@ -340,10 +340,25 @@ def llm_extract(path, provider: str, scanned: bool = False) -> dict:
     data = base64.b64encode(open(path, "rb").read()).decode()
     if provider == "gemini":
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
-        body = {"contents": [{"parts": [{"text": PROMPT}, {"inline_data": {"mime_type": "application/pdf", "data": data}}]}],
-                "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}}
-        r = _post(url, body, {"x-goog-api-key": config.GEMINI_API_KEY}, "Gemini")
-        out = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        base = {"temperature": 0, "responseMimeType": "application/json"}
+        # Gemini 3 models think at "high" by default, which is slow and unnecessary for reading a
+        # document. Ask for the lowest level; if this model rejects the setting, step back.
+        attempts = [{**base, "thinkingConfig": {"thinkingLevel": lvl}} for lvl in ("minimal", "low")] + [base]
+        last = None
+        for gen in attempts:
+            body = {"contents": [{"parts": [{"text": PROMPT}, {"inline_data": {"mime_type": "application/pdf", "data": data}}]}],
+                    "generationConfig": gen}
+            try:
+                r = _post(url, body, {"x-goog-api-key": config.GEMINI_API_KEY}, "Gemini")
+                break
+            except RuntimeError as e:
+                last = e
+                if " 400:" not in str(e):  # only a rejected setting is worth retrying differently
+                    raise
+        else:
+            raise last
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        out = "".join(p.get("text", "") for p in parts if not p.get("thought"))
         model = config.GEMINI_MODEL
     elif provider == "anthropic":
         body = {"model": config.ANTHROPIC_MODEL, "max_tokens": 2500, "temperature": 0,
