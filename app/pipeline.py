@@ -153,11 +153,6 @@ def execute(run: Run, path: Path, filename: str, file_hash: str):
         parsed = extract.rules_extract(info.get("text") or "", ocr=info["method"] == "OCR",
                                        ocr_confidence=info.get("ocr_confidence"))
         findings, details = [], {}
-        if info.get("alt_text"):
-            alt = extract.rules_extract(info["alt_text"], ocr=True, ocr_confidence=info.get("ocr_confidence"))
-            filled = extract.merge_passes(parsed, alt)
-            if filled:
-                details["second_ocr_pass"] = f"Filled {', '.join(filled)} from a second OCR pass"
         provider = config.active_extractor()
         fields, used = parsed, "rules parser"
         if provider in ("gemini", "anthropic"):
@@ -176,8 +171,19 @@ def execute(run: Run, path: Path, filename: str, file_hash: str):
                                             evidence={"diffs": diffs}, owner="AP clerk"))
             except Exception as e:
                 findings.append(rules.F("LLM_FALLBACK", "LLM unavailable, used the rules parser", "info",
-                                        f"{type(e).__name__}: {str(e)[:160]}"))
+                                        f"{type(e).__name__}: {str(e)[:300]}"))
+                details["llm_error"] = f"{type(e).__name__}: {str(e)[:300]}"
                 used = "rules parser (LLM fallback)"
+        # The parser is doing the real work (no LLM, or it failed) and the scan left gaps:
+        # run a second, column-aware OCR pass and fill what's missing. Skipped otherwise, it's slow.
+        needed = ("invoice_number", "invoice_date", "total", "vendor_gstin", "buyer_gstin")
+        if fields is parsed and info.get("method") == "OCR" and \
+                (any(not parsed.get(k) for k in needed) or not parsed.get("line_items")):
+            alt = extract.rules_extract(extract.second_ocr_pass(info), ocr=True,
+                                        ocr_confidence=info.get("ocr_confidence"))
+            filled = extract.merge_passes(parsed, alt)
+            if filled:
+                details["second_ocr_pass"] = f"Filled {', '.join(filled)} from a second OCR pass"
         ctx["fields"] = fields
         details["extractor"] = used
         details["fields"] = {k: fields.get(k) for k in (

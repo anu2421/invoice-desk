@@ -155,26 +155,50 @@ def read_document(path):
         return info
     try:
         import pypdfium2 as pdfium
-        import pytesseract
 
         pdf = pdfium.PdfDocument(str(path))
-        parts, alt, confs = [], [], []
-        for i in range(min(len(pdf), 5)):
+        images, parts, confs = [], [], []
+        for i in range(min(len(pdf), 3)):
             page = pdf[i]
-            # photos converted to PDF can be small; OCR needs roughly 2400px across for invoice-sized text
-            scale = max(300 / 72, 2400 / page.get_width())
-            img = page.render(scale=scale).to_pil()
-            parts.append(pytesseract.image_to_string(img, config="--psm 6"))
-            # second pass with column-aware segmentation; side-by-side blocks often only read in one mode
-            alt.append(pytesseract.image_to_string(img, config="--psm 4"))
-            data = pytesseract.image_to_data(img, config="--psm 6", output_type=pytesseract.Output.DICT)
-            confs += [float(c) for c in data["conf"] if str(c) not in ("-1", "-1.0")]
+            # photos converted to PDF can be small; OCR needs roughly 2000px across for invoice-sized text
+            scale = max(200 / 72, 1700 / page.get_width())
+            img = page.render(scale=scale).to_pil().convert("L")
+            images.append(img)
+            text_i, conf_i = ocr_image(img, psm=6)
+            parts.append(text_i)
+            confs += conf_i
         text = "\n".join(parts)
-        info.update(method="OCR", text=text, chars=len(text), alt_text="\n".join(alt),
+        info.update(method="OCR", text=text, chars=len(text), _images=images,
                     ocr_confidence=round(sum(confs) / len(confs) / 100, 2) if confs else None)
     except Exception as e:
         info.update(method="none", error=f"No text layer and OCR is unavailable: {e}")
     return info
+
+
+def ocr_image(img, psm=6):
+    """One Tesseract pass that returns both the text (rebuilt line by line) and word confidences."""
+    import pytesseract
+
+    d = pytesseract.image_to_data(img, config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
+    lines, order, confs = {}, [], []
+    for i, word in enumerate(d["text"]):
+        if not str(word).strip():
+            continue
+        key = (d["block_num"][i], d["par_num"][i], d["line_num"][i])
+        if key not in lines:
+            lines[key] = []
+            order.append(key)
+        lines[key].append(word)
+        c = float(d["conf"][i])
+        if c >= 0:
+            confs.append(c)
+    return "\n".join(" ".join(lines[k]) for k in order), confs
+
+
+def second_ocr_pass(info) -> str:
+    """Column-aware pass (psm 4) for when the first pass missed fields. Only run when needed,
+    since OCR is the slowest step on a small server."""
+    return "\n".join(ocr_image(img, psm=4)[0] for img in info.get("_images") or [])
 
 
 # ============================================================ rules-based extractor
@@ -293,14 +317,32 @@ def _json_from(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+def _post(url, body, headers, name):
+    """POST with one retry on rate limits / server errors, and a readable error message."""
+    import time as _t
+    for attempt in range(2):
+        r = requests.post(url, json=body, headers=headers, timeout=90)
+        if r.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+            _t.sleep(2)
+            continue
+        break
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("error", {})
+            msg = msg.get("message") if isinstance(msg, dict) else str(msg)
+        except Exception:
+            msg = r.text[:200]
+        raise RuntimeError(f"{name} API returned {r.status_code}: {msg}")
+    return r
+
+
 def llm_extract(path, provider: str, scanned: bool = False) -> dict:
     data = base64.b64encode(open(path, "rb").read()).decode()
     if provider == "gemini":
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.GEMINI_MODEL}:generateContent"
         body = {"contents": [{"parts": [{"text": PROMPT}, {"inline_data": {"mime_type": "application/pdf", "data": data}}]}],
                 "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}}
-        r = requests.post(url, json=body, headers={"x-goog-api-key": config.GEMINI_API_KEY}, timeout=90)
-        r.raise_for_status()
+        r = _post(url, body, {"x-goog-api-key": config.GEMINI_API_KEY}, "Gemini")
         out = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         model = config.GEMINI_MODEL
     elif provider == "anthropic":
@@ -308,9 +350,8 @@ def llm_extract(path, provider: str, scanned: bool = False) -> dict:
                 "messages": [{"role": "user", "content": [
                     {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": data}},
                     {"type": "text", "text": PROMPT}]}]}
-        r = requests.post("https://api.anthropic.com/v1/messages", json=body, timeout=90, headers={
-            "x-api-key": config.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"})
-        r.raise_for_status()
+        r = _post("https://api.anthropic.com/v1/messages", body, {
+            "x-api-key": config.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, "Claude")
         out = "".join(b.get("text", "") for b in r.json()["content"])
         model = config.ANTHROPIC_MODEL
     else:
