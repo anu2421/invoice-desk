@@ -46,7 +46,7 @@ python tests/test_scenarios.py     # runs all 11 invoices + a re-upload, prints 
 1. Push this folder to a new GitHub repo.
 2. On https://render.com choose **New → Blueprint** and pick the repo. It reads `render.yaml` and builds the Dockerfile (with Tesseract).
 3. When asked, paste your `GEMINI_API_KEY`.
-4. Open the URL and check the header says *Reading with gemini-2.5-flash*.
+4. Open the URL and check the header says *Reading with gemini-3.8-flash*.
 
 Free-tier caveats you should know before the demo:
 - The service sleeps after 15 minutes idle; the first request then takes about 30–50 seconds. **Open the link 2 minutes before any demo.**
@@ -59,7 +59,7 @@ Railway, Fly.io or Hugging Face Spaces (Docker) all work with the same Dockerfil
 | Variable | Default | What it does |
 |---|---|---|
 | `GEMINI_API_KEY` | none | Use Gemini to read invoices |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Main Gemini model (falls back to gemini-3.1-flash-lite, then gemini-3.8-flash, if busy) |
 | `ANTHROPIC_API_KEY` | none | Use Claude to read invoices |
 | `ANTHROPIC_MODEL` | `claude-haiku-5-5` | Claude model |
 | `EXTRACTOR` | `auto` | `auto`, `gemini`, `anthropic`, or `rules` (force offline) |
@@ -70,7 +70,7 @@ Rule thresholds (tolerances, windows) are in `app/config.py` and shown on the *H
 
 ## Test invoices
 
-`samples/` has 11 invoices from 5 fictional vendors in 3 different layouts (clean, branded, dot-matrix style), plus one image-only scan. Regenerate them with `python scripts/generate_samples.py`.
+`samples/` has 14 invoices from 5 fictional vendors in 3 different layouts (clean, branded, dot-matrix style), plus one image-only scan. Regenerate them with `python scripts/generate_samples.py`.
 
 | # | Scenario | Decision | What it tests |
 |---|---|---|---|
@@ -86,7 +86,26 @@ Rule thresholds (tolerances, windows) are in `app/config.py` and shown on the *H
 | 10 | Wrong GST type | Rejected | Both parties in Haryana but IGST charged: right amount, wrong tax head |
 | 11 | Variance inside tolerance | Approved | Stretch film +1% vs PO; noted but not stopped |
 
+| 12–14 | Learning from reviewers | On hold, then Approved | Sharma bills boxes 3.5% over PO (an agreed surcharge). After reviewers approve 12 and 13, a 4% vendor tolerance is suggested; once applied, 14 goes straight through. Not part of "Run all"; run them one by one. |
+
+**Real-world documents.** It was also tested on real Myntra and Zomato downloads (not included, since they hold personal details). Those showed two things synthetic data didn't:
+- One PDF often holds several documents from different sellers (product invoice, platform-fee invoice, delivery bill of supply), sometimes with a repeated page. They're split into one run each, and repeated pages are dropped.
+- Consumer bills are addressed to a person ("Customer type: Unregistered"). Those are routed to employee expense claims, not paid as supplier invoices.
+- They also exposed a bug: the GST-type rule assumed the buyer's state. It now uses the place of supply printed on the invoice.
+
+The GSTIN checksum validates all 5 real GSTINs on those invoices.
+
 Re-uploading an approved invoice is rejected as an exact duplicate. A low-resolution phone photo (PNG) of invoice 11 is fully read through two OCR passes and held, because one GSTIN needed an OCR repair. `tests/test_scenarios.py` checks all of these.
+
+## Problems it's built around
+
+| What goes wrong in AP | Evidence | What this does |
+|---|---|---|
+| Exceptions eat time | Top AP challenge for 53% of AP leaders; exception rate 22% typical vs 9% best-in-class ([Ardent Partners 2025](https://www.datocms-assets.com/80283/1744404602-ardent-partners-ap-metrics-that-matter-in-2025-pagero-final.pdf)) | Every hold names its reason and owner; holds reviewers keep approving become a suggested rule change |
+| Slow approvals | 41% name it a top challenge; 9.2-day average cycle (Ardent 2025) | Seconds to a decision; held invoices show payment due date and days left |
+| Vendor impersonation / fraud | 79% of organisations faced payments fraud; BEC top route at 63%; vendor impersonation 45% ([AFP 2025](https://www.financialprofessionals.org/about/learn-more/press-releases/Details/survey-79-percent-of-organizations-were-victims-of-attempted-or-actual-payments-fraud-activity-in-2024)) | Bank changes always held, never emailed back; lookalike vendors held; never relaxed by learning |
+| Duplicate payments | Median 1.5% of disbursements (APQC, via [Docsumo](https://www.docsumo.com/blog/accounts-payable-statistics)) | File hash, exact and reformatted numbers, amount + PO within a date window |
+| Messy documents | 77% still key invoices by hand (IFOL, via Docsumo) | Multi-invoice PDF splitting; personal bills routed to expenses |
 
 ## How it works
 
