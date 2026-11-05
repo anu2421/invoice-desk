@@ -337,7 +337,9 @@ def build_output(run, d, f, vendor, po, company):
                    "pay_to": f"{vendor['bank_name']} …{vendor['bank_account'][-4:]} (verified account on file)",
                    "itc_claimable": f.get("tax_total")}
         ledger_insert(vendor, f, po, "posted", run.id, r["file_hash"])
-        notes = [x["title"] for x in run.findings if x["effect"] == "info"]
+        # keep the reason for tolerance notes, so a learned vendor rule is visible on the approval itself
+        notes = [f"{x['title']}. {x['detail']}" if x["code"] == "PRICE_WITHIN_TOL" and x.get("detail") else x["title"]
+                 for x in run.findings if x["effect"] == "info"]
         return {**base, "kind": "posting", "posting": posting, "notes": notes,
                 "next": (f"Posted to the AP ledger. Scheduled for payment on "
                          f"{date.fromisoformat(due).day} {date.fromisoformat(due).strftime('%b %Y')}.") if due else "Posted to the AP ledger."}
