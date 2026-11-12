@@ -387,7 +387,7 @@ async function renderRuns() {
         <div class="fig"><div class="v">${st.runs}</div><div class="l">Invoices processed</div><div class="sub">${inrShort(st.value_processed)} total value</div></div>
         <div class="fig"><div class="v">${st.touchless_rate == null ? "—" : Math.round(st.touchless_rate * 100) + "%"}</div><div class="l">Approved with no one touching it</div><div class="sub">${st.auto_approved} of ${st.runs}</div></div>
         <div class="fig"><div class="v" style="color:var(--hold)">${st.in_queue}</div><div class="l">Waiting for review</div><div class="sub">${inrShort(st.value_held)} on hold</div></div>
-        <div class="fig"><div class="v" style="color:var(--stop)">${fin.rejected || 0}</div><div class="l">Rejected or returned</div><div class="sub">${fin.approved || 0} approved in total</div></div>
+        <div class="fig"><div class="v" style="color:var(--stop)">${st.returned ?? (fin.rejected || 0)}</div><div class="l">Rejected or returned</div><div class="sub">${st.rerouted ? `${st.rerouted} not AP, sent to expenses · ` : ""}${fin.approved || 0} approved in total</div></div>
         <div class="fig"><div class="v">${st.avg_seconds ?? "—"} s</div><div class="l">Average processing time</div><div class="sub">per invoice, upload to decision</div></div>
         <div class="fig"><div class="v">${(st.minutes_saved / 60).toFixed(1)} h</div><div class="l">AP time saved, estimated</div><div class="sub">vs about 12 min by hand each</div></div>
       </div>
@@ -503,6 +503,7 @@ async function renderRules() {
       <section class="panel"><div class="panel-head"><h2>Decision rule</h2></div><div class="panel-body policy">
         <div><span class="tag rejected">Rejected</span><span>Any check that means the invoice can't be booked as-is: proforma instead of tax invoice, missing number or date, invalid GSTIN, wrong GST type, unknown or blocked vendor, exact duplicate. A correction email is drafted for the vendor.</span></div>
         <div><span class="tag review">On hold</span><span>Anything a person should look at before money moves: price or quantity variance, PO over-billed, likely duplicate, bank details changed, PO inferred rather than quoted, low-confidence reading, the two extractors disagreeing.</span></div>
+        <div><span class="tag plain">Not AP</span><span>Not a supplier invoice to the company at all: billed to a person, with no company GSTIN (a food-delivery or shopping bill). Booked nowhere in AP, no email to the seller; routed to employee expense claims.</span></div>
         <div><span class="tag approved">Approved</span><span>Every check passes. Small variances inside tolerance are noted but don't stop it. Posted to the ledger with a due date from the vendor's terms.</span></div>
         <p class="small muted">If any stage errors, the invoice is held, never approved. Failing safe is the default.</p>
       </div></section>
