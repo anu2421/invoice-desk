@@ -38,7 +38,7 @@ Claude works too: set `ANTHROPIC_API_KEY` instead (and `ANTHROPIC_MODEL` if you 
 Check that every scenario still behaves:
 
 ```bash
-python tests/test_scenarios.py     # runs all 11 invoices + a re-upload, prints PASS/FAIL
+python tests/test_scenarios.py     # 11 core invoices, re-upload, phone photo, learning loop, PDF split: prints PASS/FAIL
 ```
 
 ## Deploy (Render, free)
@@ -46,7 +46,7 @@ python tests/test_scenarios.py     # runs all 11 invoices + a re-upload, prints 
 1. Push this folder to a new GitHub repo.
 2. On https://render.com choose **New → Blueprint** and pick the repo. It reads `render.yaml` and builds the Dockerfile (with Tesseract).
 3. When asked, paste your `GEMINI_API_KEY`.
-4. Open the URL and check the header says *Reading with gemini-3.8-flash*.
+4. Open the URL and check the header says *Reading with gemini-3.5-flash-lite*.
 
 Free-tier caveats you should know before the demo:
 - The service sleeps after 15 minutes idle; the first request then takes about 30–50 seconds. **Open the link 2 minutes before any demo.**
