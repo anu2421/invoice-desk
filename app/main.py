@@ -158,12 +158,14 @@ def stats():
                 exc[x["title"].split(" (")[0] if x["code"] not in ("DUPLICATE_LIKELY", "PO_INFERRED", "PRICE_VARIANCE", "PO_OVERBILLED")
                     else {"DUPLICATE_LIKELY": "Likely duplicate", "PO_INFERRED": "PO inferred, needs confirming",
                           "PRICE_VARIANCE": "Unit price above PO", "PO_OVERBILLED": "PO over-billed"}[x["code"]]] += 1
+    rerouted = sum(1 for r in rows if (r.get("output") or {}).get("kind") == "rerouted" and not r.get("review"))
     durations = [r["duration_ms"] for r in rows if r["duration_ms"]]
     held_value = sum((r["total"] or 0) for r in rows if r["final_decision"] == "review")
     caught = sum((r["total"] or 0) for r in rows if r["decision"] in ("review", "rejected"))
     return jsonify(
         runs=n, auto_approved=auto, touchless_rate=round(auto / n, 3) if n else None,
-        final=dict(final), in_queue=final.get("review", 0),
+        final=dict(final), in_queue=final.get("review", 0), rerouted=rerouted,
+        returned=final.get("rejected", 0) - rerouted,
         avg_seconds=round(sum(durations) / len(durations) / 1000, 1) if durations else None,
         value_processed=round(sum((r["total"] or 0) for r in rows), 2),
         value_held=round(held_value, 2), value_stopped=round(caught, 2),
